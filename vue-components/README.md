@@ -342,12 +342,12 @@ export default {
    
    // 找到strat方法的实现
    strats.provide = mergeDataOrFn;
-    
-   function mergeDataOrFn (
-   parentVal,
-    childVal,
-    vm
-   ) {
+   
+   export function mergeDataOrFn (
+     parentVal: any,
+     childVal: any,
+     vm?: Component
+   ): ?Function {
      if (!vm) {
        // in a Vue.extend merge, both should be functions
        if (!childVal) {
@@ -356,11 +356,6 @@ export default {
        if (!parentVal) {
          return childVal
        }
-       // when parentVal & childVal are both present,
-       // we need to return a function that returns the
-       // merged result of both functions... no need to
-       // check if parentVal is a function here because
-       // it has to be a function to pass previous merges.
        return function mergedDataFn () {
          return mergeData(
            typeof childVal === 'function' ? childVal.call(this, this) : childVal,
@@ -370,12 +365,12 @@ export default {
      } else {
        return function mergedInstanceDataFn () {
          // instance merge
-         var instanceData = typeof childVal === 'function'
-         ? childVal.call(vm, vm)
-         : childVal;
-         var defaultData = typeof parentVal === 'function'
-         ? parentVal.call(vm, vm)
-         : parentVal;
+         const instanceData = typeof childVal === 'function'
+           ? childVal.call(vm, vm)
+           : childVal
+         const defaultData = typeof parentVal === 'function'
+           ? parentVal.call(vm, vm)
+           : parentVal
          if (instanceData) {
            return mergeData(instanceData, defaultData)
          } else {
@@ -387,7 +382,84 @@ export default {
    
    ```
    
-   在组件初始化时，会将`vm.$options.provide`这个函数赋值给provide，并把调用该函数得到的结果赋值给`vm._provided`，那么`vm.$options.provide`
+   从上面的逻辑可以看出，在组件初始化时，会将`vm.$options.provide`这个函数赋值给provide，并把调用该函数得到的结果赋值给`vm._provided`，那么就会得到`vm._provided = { foo: "我是祖先类定义provide" }`
+   
+   
+   
+2. 不要停，我们继续探究一下子孙组件中的inject是怎么实现的，上源码
+
+   ```js
+   // 首先，初始化inject
+   export function initInjections (vm: Component) {
+     const result = resolveInject(vm.$options.inject, vm)
+     if (result) {
+       toggleObserving(false)
+       Object.keys(result).forEach(key => {
+         /* istanbul ignore else */
+         if (process.env.NODE_ENV !== 'production') {
+           defineReactive(vm, key, result[key], () => {
+             warn(
+               `Avoid mutating an injected value directly since the changes will be ` +
+               `overwritten whenever the provided component re-renders. ` +
+               `injection being mutated: "${key}"`,
+               vm
+             )
+           })
+         } else {
+           defineReactive(vm, key, result[key])
+         }
+       })
+       toggleObserving(true)
+     }
+   }
+   
+   // 初始化的inject实际上是resolveInject的结果，下面我们看看resolve都有哪些操作
+   // 第一步：获取组件中定义的inject的key值，然后进行遍历
+   // 第二步：根据key值获取对应的在provide中定义的provideKey，就比如上面的根据"childFoo"获取到"foo"
+   // 第三步：通过source = source.$parent逐级往上循环在_provided中查找对应的provideKey
+   // 第四步：如果找到，将实际的key值作为键，source._provided[provideKey]作为值，存为一个对象，当作这个函数的结果
+   export function resolveInject (inject: any, vm: Component): ?Object {
+     if (inject) {
+       // inject is :any because flow is not smart enough to figure out cached
+       const result = Object.create(null)
+       const keys = hasSymbol
+         ? Reflect.ownKeys(inject)
+         : Object.keys(inject)
+   
+       for (let i = 0; i < keys.length; i++) {
+         const key = keys[i]
+         // #6574 in case the inject object is observed...
+         if (key === '__ob__') continue
+         const provideKey = inject[key].from
+         let source = vm
+         while (source) {
+           if (source._provided && hasOwn(source._provided, provideKey)) {
+             result[key] = source._provided[provideKey]
+             break
+           }
+           source = source.$parent
+         }
+         if (!source) {
+           if ('default' in inject[key]) {
+             const provideDefault = inject[key].default
+             result[key] = typeof provideDefault === 'function'
+               ? provideDefault.call(vm)
+               : provideDefault
+           } else if (process.env.NODE_ENV !== 'production') {
+             warn(`Injection "${key}" not found`, vm)
+           }
+         }
+       }
+       return result
+     }
+   }
+   ```
+
+
+
+说到这里，我们应该知道了provide/inject之间的调用逻辑了吧，最后，我们在用一句话总结一下：
+
+当祖先组件在初始化时，vue首先会通过mergeOptions方法将组件中provide配置项合并vm.$options中，并通过mergeDataOrFn将provide的值放入当前实例的`_provided`中，此时当子孙组件在初始化时，也会通过合并的options解析出当前组件所定义的inject，并通过网上逐级遍历查找的方式，在祖先实例的`-provided`中找到对应的value值
 
 
 
