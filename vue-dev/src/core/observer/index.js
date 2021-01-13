@@ -45,8 +45,12 @@ export class Observer {
   // 构造函数
   constructor (value: any) {
     this.value = value
+    // 为什么在Observer里面声明一个dep?
+    // object 里面有新增或者删除属性
+    // array 中有变更方法，会根据这个dep强制更新
     this.dep = new Dep()
     this.vmCount = 0
+    // 设置一个_ob_属性引用当前Observer实例
     def(value, '__ob__', this) // def方法保证不可枚举
     if (Array.isArray(value)) {
       if (hasProto) {
@@ -169,7 +173,8 @@ export function defineReactive (
     val = obj[key]
   }
 
-  let childOb = !shallow && observe(val)
+  // 属性拦截
+  let childOb = !shallow && observe(val) // 只要是对象类型就会返回childOb
   Object.defineProperty(obj, key, {
     enumerable: true,
     configurable: true,

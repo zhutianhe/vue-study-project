@@ -25,30 +25,16 @@ Vue.prototype.$mount = function(
 ): Component {
   el = el && query(el)
 
-  /* istanbul ignore if */
-  if (el === document.body || el === document.documentElement) {
-    process.env.NODE_ENV !== 'production' &&
-      warn(
-        `Do not mount Vue to <html> or <body> - mount to normal elements instead.`
-      )
-    return this
-  }
-
   const options = this.$options
   // resolve template/el and convert to render function
+  // 如果没有render, 才会进行模板解析执行渲染
   if (!options.render) {
     let template = options.template
+    // 如果有template就用template, 配置项只有template时，就需要使用$mount挂载到dom上
     if (template) {
       if (typeof template === 'string') {
         if (template.charAt(0) === '#') {
           template = idToTemplate(template)
-          /* istanbul ignore if */
-          if (process.env.NODE_ENV !== 'production' && !template) {
-            warn(
-              `Template element not found or is empty: ${options.template}`,
-              this
-            )
-          }
         }
       } else if (template.nodeType) {
         template = template.innerHTML
@@ -58,15 +44,13 @@ Vue.prototype.$mount = function(
         }
         return this
       }
+      // 用el属性引入，则不需要使用$mount执行挂载
     } else if (el) {
       template = getOuterHTML(el)
     }
-    if (template) {
-      /* istanbul ignore if */
-      if (process.env.NODE_ENV !== 'production' && config.performance && mark) {
-        mark('compile')
-      }
 
+    // 如果模板存在，执行渲染
+    if (template) {
       const { render, staticRenderFns } = compileToFunctions(
         template,
         {
@@ -80,14 +64,9 @@ Vue.prototype.$mount = function(
       )
       options.render = render
       options.staticRenderFns = staticRenderFns
-
-      /* istanbul ignore if */
-      if (process.env.NODE_ENV !== 'production' && config.performance && mark) {
-        mark('compile end')
-        measure(`vue ${this._name} compile`, 'compile', 'compile end')
-      }
     }
   }
+  // 执行挂载
   return mount.call(this, el, hydrating)
 }
 

@@ -20,14 +20,6 @@ export function initMixin(Vue: Class<Component>) {
     // a uid
     vm._uid = uid++
 
-    let startTag, endTag
-    /* istanbul ignore if */
-    if (process.env.NODE_ENV !== 'production' && config.performance && mark) {
-      startTag = `vue-perf-start:${vm._uid}`
-      endTag = `vue-perf-end:${vm._uid}`
-      mark(startTag)
-    }
-
     // a flag to avoid this being observed
     vm._isVue = true
     // merge options
@@ -37,6 +29,7 @@ export function initMixin(Vue: Class<Component>) {
       // internal component options needs special treatment.
       initInternalComponent(vm, options) // 局部组件合并
     } else {
+      // 传入的options和默认options合并，添加一些全局的组件
       vm.$options = mergeOptions(
         resolveConstructorOptions(vm.constructor),
         options || {},
@@ -52,17 +45,19 @@ export function initMixin(Vue: Class<Component>) {
     }
     // expose real self
     vm._self = vm
-    /*初始化生命周期*/
+    /*初始化生命周期, 声明$parent, $root, $children, $refs*/
     initLifecycle(vm)
-    /*初始化事件*/
+    /*初始化事件, 给当前组件添加监听父组件传递的事件*/
     initEvents(vm)
-    /*初始化render*/
+    /*初始化render， 声明$slots, $creatElement()*/
     initRender(vm)
     /*调用beforeCreate钩子函数并且触发beforeCreate钩子事件*/
     callHook(vm, 'beforeCreate')
+    // 注入数据，在响应式之前提供，方便与组件的属性去重；为了方便其他组件使用，在后续需要在提供一次
     initInjections(vm) // resolve injections before data/props
     // 响应化的入口文件
     initState(vm)
+    // 提供数据
     initProvide(vm) // resolve provide after data/props
     callHook(vm, 'created')
 

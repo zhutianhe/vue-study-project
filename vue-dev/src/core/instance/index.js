@@ -22,13 +22,13 @@ function Vue(options) {
 initMixin(Vue)
 // stateMixin中主要声明了Vue.prototype.$data、$props、$set、$watch
 stateMixin(Vue)
-// eventsMixin主要定义了Vue.prototype.$on/$off/$once，
+// eventsMixin主要定义了Vue.prototype.$emit/$on/$off/$once，
 // 原理就是利用观察者模型，为每一个event维护一个观察队列，存放在Vue._events中
 eventsMixin(Vue)
-// lifecycleMixin中定义了我们Vue中经常用到的Vue.prototype._update方法，
+// lifecycleMixin中定义了我们Vue中经常用到的Vue.prototype._update/$forceUpdate/$destory方法，
 // 每当我们定义的组件data发生变化或其他原因需要重新渲染时，Vue会调用该方法，对Vnode做diff和patch操作
 lifecycleMixin(Vue)
-// renderMixin中定义了Vue.prototype._render等方法，_render()调用实例化时传入的render方法，生成VNode。
+// renderMixin中定义了Vue.prototype._render/$nextTick等方法，_render()调用实例化时传入的render方法，生成VNode。
 // 经常与Vue.prototype.update一起使用 
 renderMixin(Vue)
 

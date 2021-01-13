@@ -136,7 +136,7 @@ export function invokeWithErrorHandling (
 3. 而$emit是用来触发事件的，他会根据传入的`event`在`vm_events`中找到对应的事件并执行`invokeWithErrorHandling(cbs[i], vm, args, vm, info)`
 4. 最后我们看invokeWithErrorHandling方法可以发现，他是通过`handler.apply(context, args)`和`handler.call(context)`的形式执行对应的方法
 
-#### <font color=red>是不是很简单！[偷笑]</font>
+**<font color=red>是不是很简单！[偷笑]</font>**
 
 我们既然知道怎么实现的，那么我们就可以自定义实现一个Bus, 看代码
 
@@ -168,7 +168,401 @@ Vue.prototype.$bus = new Bus()
 
 ### vuex
 
-### $parent / $root
+Vuex**集中式**存储管理应用的所有组件的状态，并以相应的规则保证状态以**可预测**的方式发生变化。
+
+<img src="/Users/zth/Library/Application Support/typora-user-images/image-20201208092712388.png" alt="image-20201208092712388" style="zoom:50%;" />
+
+我们先看看如果使用vuex，
+
+- 第一步：定义一个Store
+
+  ```js
+  // store/index.js
+  import Vue from 'vue'
+  import Vuex from 'vuex'
+  
+  Vue.use(Vuex)
+  
+  export default = new Vuex.Store({
+    state: {
+      counter: 0
+    },
+    getters: {
+      doubleCounter(state) {
+        return state.counter * 2
+      }
+    },
+    mutations: {
+      add(state) {
+        state.counter ++ 
+      }
+    },
+    actions: {
+      add({commit}) {
+        setTimeout(() => {
+          commit('add')
+        }, 1000);
+      }
+    }
+  })
+  ```
+
+- 第二步，挂载app
+
+  ```js
+  // main.js
+  import vue from 'vue'
+  import App form './App.vue'
+  import store from './store'
+  
+  new Vue({
+    store,
+    render: h => h(App)
+  }).$mount('#app')
+  ```
+
+- 第三步：状态调用
+
+  ```js
+  // test.vue
+  <p @click="$store.commit('add')">counter: {{ $store.state.counter }}</p>
+  <p @click="$store.dispatch('add')">async counter: {{ $store.state.counter }}</p>
+  <p>double counter: {{ $store.getters.doubleCounter }}</p>
+  ```
+
+从上面的例子，我们可以看出，vuex需要具备这么几个特点：
+
+1. 使用Vuex只需执行 `Vue.use(Vuex)`，保证vuex是以插件的形式被vue加载。
+2. state的数据具有响应式，A组件中修改了，B组件中可用修改后的值。
+3. getters可以对state的数据做动态派生。
+4. mutations中的方法是同步修改。
+5. actions中的方法是异步修改。
+
+那我们今天就去源码里探索以下，vuex是怎么实现的，又是怎么解决以上的问题的！
+
+#### 问题1：vuex的插件加载机制
+
+所谓插件机制，就是需要实现Install方法，并且通过`mixin`形式混入到Vue的生命周期中，我们先来看看Vuex的定义
+
+- 需要对外暴露一个对象，这样就可以满足` new Vuex.Store()`
+
+  ```js
+  // src/index.js  
+  import { Store, install } from './store'
+  import { mapState, mapMutations, mapGetters, mapActions, createNamespacedHelpers } from './helpers'
+  
+  export default {
+    Store,
+    install,
+    version: '__VERSION__',
+    mapState,
+    mapMutations,
+    mapGetters,
+    mapActions,
+    createNamespacedHelpers
+  }
+  ```
+
+- 其次是定义store，并且实现vue的Install方法
+
+  ```js
+  // src/store.js
+  let Vue // bind on install
+  
+  export class Store {
+   ......
+  }
+  
+  // 实现的Install方法 
+  export function install (_Vue) {
+    if (Vue && _Vue === Vue) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.error(
+          '[vuex] already installed. Vue.use(Vuex) should be called only once.'
+        )
+      }
+      return
+    }
+    Vue = _Vue
+    applyMixin(Vue)
+  }
+  ```
+
+#### 问题2：state的数据响应式
+
+看懂了Vuex的入口定义，下面我们就针对store的定义来一探究竟，先看看state的实现
+
+```js
+// src/store.js
+export class Store {
+  constructor(options = {}) {
+    ......
+    
+    // strict mode
+    this.strict = strict
+
+    const state = this._modules.root.state
+
+    // initialize the store vm, which is responsible for the reactivity
+    // (also registers _wrappedGetters as computed properties)
+    // 看上面的注释可以得知，resetStoreVM就是初始化store中负责响应式的vm的方法，而且还注册所有的gettersz作为vm的计算属性
+    resetStoreVM(this, state)
+  }
+}
+```
+
+我们来看看resetStoreVM的具体实现
+
+```js
+// src/store.js
+function resetStoreVM (store, state, hot) {
+  const oldVm = store._vm
+
+  // bind store public getters
+  store.getters = {}
+  // reset local getters cache
+  store._makeLocalGettersCache = Object.create(null)
+  const wrappedGetters = store._wrappedGetters
+  const computed = {}
+  // 这里是实现getters的派生
+  forEachValue(wrappedGetters, (fn, key) => {
+    // use computed to leverage its lazy-caching mechanism
+    // direct inline function use will lead to closure preserving oldVm.
+    // using partial to return function with only arguments preserved in closure environment.
+    computed[key] = partial(fn, store)
+    Object.defineProperty(store.getters, key, {
+      get: () => store._vm[key],
+      enumerable: true // for local getters
+    })
+  })
+
+  // use a Vue instance to store the state tree
+  // suppress warnings just in case the user has added
+  // some funky global mixins
+  // 这是是通过new一个Vue实例，并将state作为实例的datas属性，那他自然而然就具有了响应式
+  const silent = Vue.config.silent
+  Vue.config.silent = true
+  store._vm = new Vue({
+    data: {
+      $$state: state
+    },
+    computed
+  })
+  Vue.config.silent = silent
+
+  // enable strict mode for new vm
+  if (store.strict) {
+    enableStrictMode(store)
+  }
+
+  if (oldVm) {
+    if (hot) {
+      // dispatch changes in all subscribed watchers
+      // to force getter re-evaluation for hot reloading.
+      store._withCommit(() => {
+        oldVm._data.$$state = null
+      })
+    }
+    Vue.nextTick(() => oldVm.$destroy())
+  }
+}
+```
+
+#### 问题3：getters实现state中的数据的派生
+
+关于getters的实现，我们在上面也做了相应的解释，实际上就是将getters的方法包装一层后，收集到computed对象中，并使用Object.defineProperty注册store.getters，使得每次取值时，从store._vm中取。
+
+**关键的步骤就是创建一个Vue的实例**
+
+```js
+store._vm = new Vue({
+  data: {
+    $$state: state // 这是store中的所有state
+  },
+  computed // 这是store中的所有getters
+})
+```
+
+#### 问题4：mutations中同步commit
+
+```js
+// src/store.js
+// store的构造函数
+constructor(options = {}) {
+  // 首先在构造方法中，把store中的commit和dispatch绑定到自己的实例上，
+  // 为什么要这么做呢？
+  // 是因为在commit或者dispatch时，尤其是dispatch，执行function时会调用实例this，而方法体内的this是具有作用域属性的，所以如果要保证每次this都代表store实例，就需要重新绑定一下。
+  const store = this
+  const { dispatch, commit } = this
+  this.dispatch = function boundDispatch (type, payload) {
+    return dispatch.call(store, type, payload)
+  }
+  this.commit = function boundCommit (type, payload, options) {
+    return commit.call(store, type, payload, options)
+  }
+}
+
+// commit 的实现
+commit (_type, _payload, _options) {
+  // check object-style commit
+  const {
+    type,
+    payload,
+    options
+  } = unifyObjectStyle(_type, _payload, _options)
+
+  const mutation = { type, payload }
+  // 通过传入的类型，查找到mutations中的对应的入口函数
+  const entry = this._mutations[type]
+  ......
+  // 这里是执行的主方法，通过遍历入口函数，并传参执行
+  this._withCommit(() => {
+    entry.forEach(function commitIterator (handler) {
+      handler(payload)
+    })
+  })
+	......
+}
+```
+
+#### 问题5：actions中的异步dispatch
+
+上面说了在构造store时绑定dispatch的原因，下面我们就继续看看dispatch的具体实现。
+
+```js
+// src/store.js
+// dispatch 的实现
+dispatch (_type, _payload) {
+  // check object-style dispatch
+  const {
+    type,
+    payload
+  } = unifyObjectStyle(_type, _payload)
+
+  const action = { type, payload }
+  
+  // 同样的道理，通过type获取actions中的入口函数
+  const entry = this._actions[type]
+  
+ 	······
+  
+  // 由于action是异步函数的集合，这里就用到了Promise.all，来合并多个promise方法并执行
+  const result = entry.length > 1
+  ? Promise.all(entry.map(handler => handler(payload)))
+  : entry[0](payload)
+	
+  return result.then(res => {
+    try {
+      this._actionSubscribers
+        .filter(sub => sub.after)
+        .forEach(sub => sub.after(action, this.state))
+    } catch (e) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn(`[vuex] error in after action subscribers: `)
+        console.error(e)
+      }
+    }
+    return res
+  })
+}
+```
+
+到这里，我们就把整个store中状态存储和状态变更的流程系统的串联了一遍，让我们对Vuex内部的机智有个简单的认识，最后我们根据我们对Vuex的理解来实现一个简单的Vuex。
+
+```js
+// store.js
+let Vue
+
+// 定义store类
+class Store{
+  constructor(options = {}) {
+    this.$options = options
+    this._mutations = options.mutations
+    this._actions = options.actions
+  	this._wrappedGetters = options.getters
+    
+    
+    // 定义computed
+    const computed = {}
+    this.getters = {}
+    const store = this
+    Object.keys(this._wrappedGetters).forEach(key => {
+      // 获取用户定义的getters
+      const fn = store._wrappedGetters[key]
+      
+      // 转换为computed可以使用无参数形式
+      computed[key] = function() {
+        return fn(store.state)
+      }
+      
+      // 为getters定义只读属性
+      Object.defineProperty(store.getters, key {
+      	get:() => store._vm[key]
+    	})
+    })
+    
+    // state的响应式实现
+    this._vm = new Vue({
+      data: {
+        // 加两个$，Vue不做代理
+        $$state: options.state
+      },
+      computed // 添加计算属性
+    })
+  
+    this.commit = this.commit.bind(this)
+    this.dispatch = this.dispatch.bind(this)
+  }
+  
+  // 存取器，获取store.state ，只通过get形式获取，而不是直接this.xxx, 达到对state
+  get state() {
+    return this._vm._data.$$state
+  }
+	
+	set state(v) {
+    // 如果用户不通过commit方式来改变state，就可以在这里做一控制
+  }
+
+  // commit的实现
+  commit(type, payload) {
+    const entry = this._mutations[type]
+    if (entry) {
+      entry(this.state, payload)
+    }
+  }
+  
+  // dispatch的实现
+ 	dispatch(type, payload) {
+    const entry = this._actions[type]
+    if (entry) {
+      entry(this, payload)
+    }
+  }  
+}
+
+// 实现install
+function install(_Vue) {
+  Vue = _Vue
+  Vue.mixin({
+    beforeCreate() {
+      if (this.$options.store) {
+      	Vue.prototype.$Store = this.$options.store // 这样就可以使用 this.$store
+      }
+    }
+  })
+}
+
+// 导出Vuex对象
+export default {
+  Store,
+  install
+}
+
+```
+
+
+
+### \$parent / $root
 解决问题：具有相同父类或者相同根元素的组件
 
 ```js
@@ -297,7 +691,7 @@ export default {
 
 下面我结合上面的示例和源码一步一步分析一下：
 1. 先说说provide是怎么定义参数的，源码走起
-   
+  
    ```js
    // 初始化Provide的实现
    export function initProvide (vm: Component) {
@@ -457,7 +851,7 @@ export default {
 
 
 
-说到这里，我们应该知道了provide/inject之间的调用逻辑了吧，最后，我们在用一句话总结一下：
+说到这里，我们应该知道了provide/inject之间的调用逻辑了吧。最后，我们在用一句话总结一下：
 
 当祖先组件在初始化时，vue首先会通过mergeOptions方法将组件中provide配置项合并vm.$options中，并通过mergeDataOrFn将provide的值放入当前实例的`_provided`中，此时当子孙组件在初始化时，也会通过合并的options解析出当前组件所定义的inject，并通过网上逐级遍历查找的方式，在祖先实例的`-provided`中找到对应的value值
 
@@ -466,6 +860,17 @@ export default {
 
 
 
+
+全部文章链接
+
+[Vue组件通信原理剖析（一）事件总线的基石 $on和$emit](https://blog.csdn.net/u013205165/article/details/110952379)
+
+[Vue组件通信原理剖析（二）全局状态管理Vuex](https://blog.csdn.net/u013205165/article/details/110952879)
+
+[Vue组件通信原理剖析（三）provide/inject原理分析](https://blog.csdn.net/u013205165/article/details/110953064)
+
+最后喜欢我的小伙伴也可以通过关注公众号“剑指大前端”，或者扫描下方二维码联系到我，进行经验交流和分享，同时我也会定期分享一些大前端干货，让我们的开发从此不迷路。
+![在这里插入图片描述](https://img-blog.csdnimg.cn/20201119095922148.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3UwMTMyMDUxNjU=,size_16,color_FFFFFF,t_70#pic_center)
 
 
 
